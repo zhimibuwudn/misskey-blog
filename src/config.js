@@ -6,9 +6,9 @@ export const CONFIG = {
   // ==============================================================================
   
   // Format: @username@instance.domain
-  // Example: @A@sshup.com
+  // Example: @Z@sshup.com
   // 格式：@用户名@实例域名
-  FEDIVERSE_HANDLE: '@A@sshup.com',
+  FEDIVERSE_HANDLE: '@Z@sshup.com',
 
   // ==============================================================================
   // 2. SITE META (Website Information) | 网站元信息
@@ -41,7 +41,7 @@ export const CONFIG = {
     MARQUEE_TEXT: [
       '🍮', '❤️', '💬', '🔄', '😺', 
       '🎉', '🤔', '🚀', '⭐', '👀', 
-      '➕', 'System Online', '( ﾟ∀。)', '干杯 🍻'
+      '➕', '( ﾟ∀。)', '干杯 🍻'
     ],
   }
 };

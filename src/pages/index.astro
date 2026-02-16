@@ -20,8 +20,7 @@ const parseHandle = (handle) => {
 const { username: USER_NAME, instance: INSTANCE_URL, domain: DOMAIN } = parseHandle(CONFIG.FEDIVERSE_HANDLE);
 
 // 全局变量
-let mediaNotes = []; 
-let textNotes = [];
+let timelineNotes = []; 
 let errorMsg = '';
 let dynamicDesc = CONFIG.SITE_DESC; 
 let dynamicImage = CONFIG.SITE_ICON; 
@@ -103,20 +102,19 @@ async function fetchFediverseData() {
         return [];
     }
 
-    // 3. 抓取内容 (增加抓取基数，确保有足够内容进行筛选)
+    // 3. 抓取内容
     if (localPlatform === 'misskey') {
         const res = await fetch(`${INSTANCE_URL}/api/users/notes`, {
             method: "POST", headers: { "Content-Type": "application/json", ...headers },
-            // Misskey 抓取 100 条作为基数
-            body: JSON.stringify({ userId: userId, limit: 100, includeReplies: false, includeMyRenotes: true }),
+            // 抓取 30 条混合内容
+            body: JSON.stringify({ userId: userId, limit: 30, includeReplies: false, includeMyRenotes: true }),
         });
         if (!res.ok) return [];
         const raw = await res.json();
         return raw.map(n => ({ ...n, isHtml: false, platform: 'misskey', url: `https://${DOMAIN}/notes/${n.id}` }));
 
     } else if (localPlatform === 'mastodon') {
-        // Mastodon 抓取 40 条 (通常 API 单次上限) 作为基数
-        const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=40&exclude_replies=true`, { headers: headers });
+        const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=30&exclude_replies=true`, { headers: headers });
         if (!res.ok) return [];
         const mstdNotes = await res.json();
         return mstdNotes.map(normalizeMastodon);
@@ -143,7 +141,7 @@ const formatDate = (isoString) => {
 };
 
 // ==============================================
-// 2. 数据处理与执行 (智能分类 + 数量限制)
+// 2. 数据处理与执行
 // ==============================================
 try {
   const allNotes = await fetchFediverseData();
@@ -151,7 +149,7 @@ try {
   if (!allNotes || allNotes.length === 0) {
       errorMsg = 'No public posts found (Server-side)';
   } else {
-      // 智能预览图逻辑
+      // 智能预览图
       const imageNote = allNotes.find(n => {
           const target = n.renote || n;
           return target.files && target.files.length > 0;
@@ -166,39 +164,19 @@ try {
           rawText = rawText.replace(/\n/g, ' '); 
           dynamicDesc = rawText.length > 120 ? rawText.substring(0, 117) + '...' : rawText;
           if (imageNote.renote) dynamicDesc = `🔄 ${dynamicDesc}`;
-      } else {
-          const latest = allNotes[0].renote || allNotes[0];
-          let rawText = latest.isHtml ? latest.text.replace(/<[^>]+>/g, '') : (latest.text || '');
-          if (rawText) {
-              rawText = rawText.replace(/\n/g, ' '); 
-              dynamicDesc = rawText.length > 120 ? rawText.substring(0, 117) + '...' : rawText;
-          }
       }
       
-      // 分类逻辑
+      // 过滤与赋值
       allNotes.forEach(note => {
         const target = note.renote || note;
         if (target.replyId && target.replyAccountId !== target.user.id) return; 
-
-        const hasMedia = target.files && target.files.length > 0;
-        if (hasMedia) {
-            mediaNotes.push(note);
-        } else {
-            textNotes.push(note);
-        }
+        timelineNotes.push(note);
       });
-
-      // ⚠️ 数量限制修正：各取最多 15 条
-      mediaNotes = mediaNotes.slice(0, 15);
-      textNotes = textNotes.slice(0, 15);
   }
 } catch (e) {
   errorMsg = `Server Error: ${e.message}`;
 }
 
-const hasMedia = mediaNotes.length > 0;
-const hasText = textNotes.length > 0;
-const singleColumnMode = !hasMedia || !hasText;
 const PAGE_TITLE = `${CONFIG.SITE_TITLE}`; 
 const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT];
 ---
@@ -244,7 +222,9 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .text-content p { margin: 0 0 8px 0; }
         .text-content p:last-child { margin-bottom: 0; }
         .text-content a { color: var(--link-color); text-decoration: none; }
-        .header-bar { position: fixed; top: 0; width: 70%; left: 50%; transform: translateX(-50%); height: 80px; padding: 0 30px; background: rgba(5,5,5,0.6); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-sizing: border-box; gap: 20px; }
+        
+        /* 顶部导航: 增加宽度到 75% */
+        .header-bar { position: fixed; top: 0; width: 75%; left: 50%; transform: translateX(-50%); height: 80px; padding: 0 30px; background: rgba(5,5,5,0.6); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-sizing: border-box; gap: 20px; min-width: 900px; }
         .header-left { display: flex; flex-direction: column; justify-content: center; min-width: 150px; }
         h1 { font-size: 1.5rem; font-weight: 800; margin: 0; letter-spacing: -0.5px; background: var(--accent-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 2px 10px rgba(0,0,0,0.5)); display: flex; align-items: center; }
         .header-marquee { flex: 1; overflow: hidden; position: relative; height: 40px; display: flex; align-items: center; mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent); -webkit-mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent); }
@@ -253,39 +233,74 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .reaction-item { font-size: 1.2rem; cursor: pointer; user-select: none; transition: all 0.1s; opacity: 0.6; filter: grayscale(0.5); transform-origin: center center; white-space: nowrap; }
         .reaction-item:hover { transform: scale(1.3); opacity: 1; filter: grayscale(0); }
         .reaction-item.active-pop { animation: pop-bounce 0.4s ease-out forwards; opacity: 1; filter: grayscale(0) brightness(1.2); color: #fff; }
+        
         .header-right { display: flex; align-items: center; gap: 10px; min-width: 200px; justify-content: flex-end; }
         .status-badge { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--terminal-green); background: rgba(0, 0, 0, 0.3); padding: 4px 10px; border-radius: 4px; border: 1px solid var(--terminal-green); opacity: 0.8; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); }
         .status-dot { width: 6px; height: 6px; background: var(--terminal-green); border-radius: 50%; box-shadow: 0 0 8px var(--terminal-green); animation: pulse 2s infinite; }
         .icon-btn { color: var(--text-sub); text-decoration: none; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); transition: all 0.2s; background: rgba(0,0,0,0.2); backdrop-filter: blur(4px); cursor: pointer; }
         .icon-btn:hover { border-color: var(--terminal-border); color: var(--terminal-green); background: rgba(255, 255, 255, 0.05); box-shadow: 0 0 10px rgba(57, 255, 20, 0.1); }
-        .icon-btn.active-view { border-color: var(--terminal-green); color: var(--terminal-green); background: rgba(57, 255, 20, 0.1); }
         .btn-icon-svg { width: 18px; height: 18px; fill: currentColor; }
+        
         .refresh-btn { position: fixed; bottom: 30px; right: 30px; width: 50px; height: 50px; border-radius: 50%; background: rgba(20, 20, 23, 0.7); border: 1px solid rgba(255, 255, 255, 0.15); color: var(--text-sub); cursor: pointer; backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
         .refresh-btn:hover { border-color: var(--terminal-green); color: var(--terminal-green); box-shadow: 0 0 15px rgba(57, 255, 20, 0.3); transform: rotate(180deg) scale(1.1); }
         .refresh-icon { width: 24px; height: 24px; fill: currentColor; }
-        .dashboard-container { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 0; overflow: hidden; padding-top: 0; height: 100vh; width: 70%; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
-        .dashboard-container.one-col { grid-template-columns: 1fr; }
-        .dashboard-container.one-col .column-left { border-right: none; }
-        .hidden-col { display: none !important; }
-        .scroll-column { height: 100%; overflow-y: auto; padding: 100px 20px 40px 20px; scroll-behavior: smooth; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
+        
+        /* 布局 - 升级到 75% 宽度，并设置最小宽度 */
+        .dashboard-container { 
+            flex: 1; 
+            display: block; 
+            width: 75%; /* 3/4 屏幕宽度，更宽敞 */
+            min-width: 900px; /* 防止在小笔记本上过窄 */
+            margin: 0 auto; 
+            padding-top: 0; 
+            height: 100vh; 
+            overflow: hidden; 
+            border-left: 1px solid var(--border); 
+            border-right: 1px solid var(--border); 
+        }
+        
+        /* 统一滚动区域 */
+        .scroll-column { 
+            height: 100%; 
+            overflow-y: auto; 
+            padding: 100px 20px 40px 20px; 
+            scroll-behavior: smooth; 
+            scrollbar-width: thin; 
+            scrollbar-color: rgba(255,255,255,0.1) transparent; 
+        }
         .scroll-column::-webkit-scrollbar { width: 4px; }
         .scroll-column::-webkit-scrollbar-track { background: transparent; }
         .scroll-column::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
-        .column-left { border-right: 1px solid rgba(255,255,255,0.05); }
+
         .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; transition: all 0.2s ease; animation: fade-in-up 0.5s ease-out forwards; opacity: 0; }
         .card:hover { transform: translateY(-2px); border-color: var(--terminal-border); background: rgba(30, 30, 35, 0.8); }
         .user-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
         .avatar { width: 36px; height: 36px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); object-fit: cover; }
         .username { font-weight: 700; font-size: 0.95rem; color: var(--userColor); }
-        .text-content { line-height: 1.6; color: var(--text-main); font-size: 0.9rem; margin-bottom: 12px; overflow-wrap: break-word; }
+        .text-content { line-height: 1.6; color: var(--text-main); font-size: 0.95rem; margin-bottom: 12px; overflow-wrap: break-word; }
         .renote-box { background: rgba(0,0,0,0.3); border-left: 2px solid #555; padding: 10px; margin-bottom: 10px; font-size: 0.85em; color: #999; font-family: 'JetBrains Mono', monospace; }
-        .media-grid { display: grid; gap: 4px; border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
-        .media-grid[data-count="1"] { grid-template-columns: 1fr; }
-        .media-grid[data-count="2"] { grid-template-columns: 1fr 1fr; }
-        .media-grid[data-count="3"], .media-grid[data-count="4"] { grid-template-columns: 1fr 1fr; }
-        .media-item { width: 100%; height: 200px; object-fit: cover; cursor: zoom-in; background: #222; transition: opacity 0.2s; }
-        .media-grid[data-count="1"] .media-item { height: auto; max-height: 650px; object-fit: cover; }
-        .media-item:hover { opacity: 0.8; }
+        
+        /* 媒体展示 - 原图模式 (无裁剪，无黑边) */
+        .media-grid { 
+            display: flex; 
+            flex-direction: column; 
+            gap: 12px; 
+            margin-bottom: 12px; 
+        }
+        .media-item { 
+            width: auto; /* 宽度自适应 */
+            max-width: 100%; /* 但不超过卡片宽度 */
+            height: auto; /* 高度自适应 */
+            display: block;
+            margin: 0 auto; /* 居中显示 */
+            object-fit: contain; 
+            border-radius: 8px;
+            cursor: zoom-in; 
+            border: 1px solid rgba(255,255,255,0.05);
+            transition: opacity 0.2s; 
+        }
+        .media-item:hover { opacity: 0.9; }
+        
         .card-footer { padding-top: 12px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-size: 0.75em; color: #666; font-family: 'JetBrains Mono', monospace; }
         .footer-right { display: flex; align-items: center; gap: 12px; }
         .renote-icon-svg { width: 16px; height: 16px; fill: var(--text-sub); opacity: 0.7; }
@@ -302,13 +317,13 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         @keyframes fade-in-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .client-loading { text-align:center; padding: 20px; color: #666; font-size: 0.9em; animation: pulse 1s infinite; }
         .error-message { color: #ef4444; padding: 20px; text-align: center; border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.1); border-radius: 8px; margin: 100px auto; width: 80%; }
+        
         @media (max-width: 768px) {
             html, body { height: auto !important; overflow-y: auto !important; display: block; background-attachment: scroll; }
-            .header-bar { width: 100%; left: 0; transform: none; padding: 0 15px; border-left: none; border-right: none; }
+            .header-bar { width: 100%; left: 0; transform: none; padding: 0 15px; border-left: none; border-right: none; min-width: 0; }
             .header-marquee { display: none; }
-            .dashboard-container { display: block; padding-top: 0; height: auto !important; overflow: visible !important; width: 100%; margin: 0; border: none; }
+            .dashboard-container { display: block; padding-top: 0; height: auto !important; overflow: visible !important; width: 100%; margin: 0; border: none; min-width: 0; }
             .scroll-column { height: auto !important; overflow: visible !important; padding: 100px 15px 40px 15px !important; }
-            .column-left { border-right: none; border-bottom: 1px solid var(--border); }
             .refresh-btn { bottom: 20px; right: 20px; width: 45px; height: 45px; }
         }
     </style>
@@ -318,21 +333,9 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         <div class="header-left"><h1>{CONFIG.SITE_TITLE}</h1></div>
         <div class="header-marquee"><div class="marquee-track">{marqueeItems.map(item => (<div class="reaction-item">{item}</div>))}</div></div>
         <div class="header-right">
-            <div class="status-badge"><span class="status-dot"></span>SYSTEM ONLINE</div>
+            {/* 状态指示 */}
+            <div class="status-badge"><span class="status-dot"></span>UP</div>
             
-            {/* 视图切换按钮组 */}
-            <button id="view-mixed" class="icon-btn active-view" title="Mixed View">
-                <svg class="btn-icon-svg" viewBox="0 0 24 24"><path d="M3 3h18v18H3V3zm2 2v14h14V5H5zm2 2h4v4H7V7zm6 0h4v10h-4V7z"/></svg>
-            </button>
-            <button id="view-media" class="icon-btn" title="Gallery View">
-                <svg class="btn-icon-svg" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-            </button>
-            <button id="view-text" class="icon-btn" title="Reading View">
-                <svg class="btn-icon-svg" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
-            </button>
-
-            <span style="width:1px;height:20px;background:rgba(255,255,255,0.1);margin:0 5px;"></span>
-
             {/* GitHub 纯图标 */}
             {CONFIG.GITHUB_REPO && (
                 <a href={CONFIG.GITHUB_REPO} target="_blank" class="icon-btn" title="GitHub">
@@ -347,73 +350,52 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         </div>
     </header>
 
-    <main class={`dashboard-container ${singleColumnMode ? 'one-col' : ''}`} id="main-container">
+    <main class="dashboard-container" id="main-container">
         {errorMsg === '' ? (
-            <>
-                <div class={`scroll-column column-left ${!hasMedia ? 'hidden-col' : ''}`} id="col-media">
-                    {mediaNotes.map((note, index) => {
-                        const target = note.renote || note;
-                        const isRenote = !!note.renote;
-                        
-                        return (
-                            <article class="card" style={`animation-delay: ${index * 0.05}s`}>
-                                <div class="user-header">
-                                    <img class="avatar" src={target.user.avatarUrl} loading="lazy" alt={target.user.name}/>
-                                    <span class="username">{target.user.name || target.user.username}</span>
+            <div class="scroll-column">
+                {timelineNotes.map((note, index) => {
+                    const target = note.renote || note;
+                    const isRenote = !!note.renote;
+                    
+                    return (
+                        <article class="card" style={`animation-delay: ${index * 0.05}s`}>
+                            <div class="user-header">
+                                <img class="avatar" src={target.user.avatarUrl} loading="lazy" alt={target.user.name}/>
+                                <span class="username">{target.user.name || target.user.username}</span>
+                            </div>
+                            
+                            {/* 文字内容 */}
+                            {target.text && <div class="text-content" set:html={formatNoteText(target.text, target.isHtml)}></div>}
+                            
+                            {/* 图片内容 (自适应原图) */}
+                            {target.files && target.files.length > 0 && (
+                                <div class="media-grid">
+                                    {target.files.map(file => (
+                                        file.type.startsWith('image') ?
+                                        <img src={file.thumbnailUrl || file.url} class="media-item" loading="lazy" data-full-src={file.url} alt="Media" /> : 
+                                        <video src={file.url} controls style="width:100%;border-radius:8px;"></video>
+                                    ))}
                                 </div>
-                                {target.text && <div class="text-content" set:html={formatNoteText(target.text, target.isHtml)}></div>}
-                                {target.files && (
-                                    <div class="media-grid" data-count={target.files.length}>
-                                        {target.files.map(file => (
-                                            file.type.startsWith('image') ?
-                                            <img src={file.thumbnailUrl || file.url} class="media-item" loading="lazy" data-full-src={file.url} alt="Media" /> : <video src={file.url} controls style="width:100%"></video>
-                                        ))}
-                                    </div>
-                                )}
-                                <div class="card-footer">
-                                    <span class="date">{formatDate(note.createdAt)}</span>
-                                    <div class="footer-right">
-                                        {isRenote && (
-                                            <svg class="renote-icon-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" title="Renote">
-                                                 <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
-                                            </svg>
-                                        )}
-                                        <a href={note.url} target="_blank" rel="noopener noreferrer" class="original-link">RAW ↗</a>
-                                    </div>
+                            )}
+
+                            {/* 引用/评论框 */}
+                            {note.renote && note.text && (<div class="renote-box" set:html={`// comment: <br> ${formatNoteText(note.text, note.isHtml)}`}></div>)}
+                            
+                            <div class="card-footer">
+                                <span class="date">{formatDate(note.createdAt)}</span>
+                                <div class="footer-right">
+                                    {isRenote && (
+                                        <svg class="renote-icon-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" title="Renote">
+                                                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+                                        </svg>
+                                    )}
+                                    <a href={note.url} target="_blank" rel="noopener noreferrer" class="original-link">RAW ↗</a>
                                 </div>
-                            </article>
-                        )
-                    })}
-                </div>
-                <div class={`scroll-column column-right ${!hasText ? 'hidden-col' : ''}`} id="col-text">
-                    {textNotes.map((note, index) => {
-                        const target = note.renote || note;
-                        const isRenote = !!note.renote;
-                        
-                        return (
-                            <article class="card" style={`animation-delay: ${(index * 0.05) + 0.2}s`}>
-                                <div class="user-header">
-                                    <img class="avatar" src={target.user.avatarUrl} loading="lazy" alt={target.user.name}/>
-                                    <div class="username">{target.user.name || target.user.username}</div>
-                                </div>
-                                {target.text && <div class="text-content" set:html={formatNoteText(target.text, target.isHtml)}></div>}
-                                {note.renote && note.text && (<div class="renote-box" set:html={`// comment: <br> ${formatNoteText(note.text, note.isHtml)}`}></div>)}
-                                <div class="card-footer">
-                                    <span class="date">{formatDate(note.createdAt)}</span>
-                                    <div class="footer-right">
-                                        {isRenote && (
-                                            <svg class="renote-icon-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" title="Renote">
-                                                 <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
-                                            </svg>
-                                        )}
-                                        <a href={note.url} target="_blank" rel="noopener noreferrer" class="original-link">RAW ↗</a>
-                                    </div>
-                                </div>
-                            </article>
-                        )
-                    })}
-                </div>
-            </>
+                            </div>
+                        </article>
+                    )
+                })}
+            </div>
         ) : (
             <div id="client-fallback-area">
                 <div class="error-message" style="display:none;" id="final-error">
@@ -436,55 +418,12 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
     </button>
     
     <script define:vars={{ USER_NAME, INSTANCE_URL, DOMAIN, serverError: errorMsg }}>
-        // --- 视图切换逻辑 ---
-        const container = document.getElementById('main-container');
-        const colMedia = document.getElementById('col-media');
-        const colText = document.getElementById('col-text');
-        const btns = {
-            mixed: document.getElementById('view-mixed'),
-            media: document.getElementById('view-media'),
-            text: document.getElementById('view-text')
-        };
-
-        function setView(mode) {
-            // 更新按钮状态
-            Object.values(btns).forEach(b => b.classList.remove('active-view'));
-            btns[mode].classList.add('active-view');
-
-            // 恢复初始状态
-            container.classList.remove('one-col');
-            if(colMedia) colMedia.classList.remove('hidden-col');
-            if(colText) colText.classList.remove('hidden-col');
-
-            if (mode === 'mixed') {
-                // 混合模式：如果某列本身没数据，保持单栏
-                const hasMedia = colMedia && colMedia.children.length > 0;
-                const hasText = colText && colText.children.length > 0;
-                if (!hasMedia || !hasText) container.classList.add('one-col');
-                if (!hasMedia && colMedia) colMedia.classList.add('hidden-col');
-                if (!hasText && colText) colText.classList.add('hidden-col');
-            } else if (mode === 'media') {
-                container.classList.add('one-col');
-                if(colText) colText.classList.add('hidden-col');
-                if(colMedia && colMedia.children.length === 0) colMedia.innerHTML = '<div style="text-align:center;padding:50px;color:#666">No images found.</div>';
-            } else if (mode === 'text') {
-                container.classList.add('one-col');
-                if(colMedia) colMedia.classList.add('hidden-col');
-                if(colText && colText.children.length === 0) colText.innerHTML = '<div style="text-align:center;padding:50px;color:#666">No text posts found.</div>';
-            }
-        }
-
-        // 绑定点击事件
-        Object.keys(btns).forEach(key => {
-            btns[key].addEventListener('click', () => setView(key));
-        });
-
         // --- 刷新按钮 ---
         document.getElementById('refresh-btn').addEventListener('click', () => {
             location.reload();
         });
 
-        // --- 客户端救援 (同前) ---
+        // --- 客户端救援模式 ---
         (async function clientSideRescue() {
             if (!serverError) return; 
 
@@ -516,7 +455,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                     if (!res.ok) throw new Error('Client lookup failed');
                     
                     const user = await res.json();
-                    const notesRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/${user.id}/statuses?limit=40&exclude_replies=true`);
+                    const notesRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/${user.id}/statuses?limit=30&exclude_replies=true`);
                     const rawNotes = await notesRes.json();
                     return rawNotes.map(normalizeMastodon);
                 } catch(e) {
@@ -530,27 +469,25 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
             if (notes.length > 0) {
                 loadingEl.style.display = 'none';
                 
-                const validNotes = notes.filter(n => {
+                // 客户端过滤：只显示原创或转发，过滤回复
+                const timelineNotes = notes.filter(n => {
                    const target = n.renote || n;
                    if (!target.user) return false;
                    if (target.replyId && target.replyAccountId !== target.user.id) return false;
                    return true;
                 });
 
-                // Client side slicing
-                let mediaNotes = validNotes.filter(n => (n.renote||n).files && (n.renote||n).files.length > 0);
-                let textNotes = validNotes.filter(n => !((n.renote||n).files && (n.renote||n).files.length > 0));
-                
-                mediaNotes = mediaNotes.slice(0, 15);
-                textNotes = textNotes.slice(0, 15);
-                
+                // 客户端渲染逻辑 (单栏)
                 const renderCard = (note) => {
                     const target = note.renote || note;
                     const isRenote = !!note.renote;
+                    
+                    // 图片按原图比例展示
                     const mediaHtml = target.files && target.files.length ? 
-                        `<div class="media-grid" data-count="${target.files.length}">
+                        `<div class="media-grid">
                             ${target.files.map(f => `<img src="${f.thumbnailUrl}" class="media-item" data-full-src="${f.url}" loading="lazy" alt="Media">`).join('')}
                         </div>` : '';
+                    
                     const dateStr = new Date(note.createdAt).toLocaleDateString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute:'2-digit'});
                     const renoteIcon = isRenote ? `<svg class="renote-icon-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>` : '';
 
@@ -570,20 +507,10 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                     </article>`;
                 };
 
-                let html = `
-                    <div class="scroll-column column-left ${mediaNotes.length===0?'hidden-col':''}" id="col-media">${mediaNotes.map(renderCard).join('')}</div>
-                    <div class="scroll-column column-right ${textNotes.length===0?'hidden-col':''}" id="col-text">${textNotes.map(renderCard).join('')}</div>
-                `;
-                
-                mainContainer.innerHTML = html;
-                mainContainer.classList.remove('one-col');
-                if(mediaNotes.length===0 || textNotes.length===0) mainContainer.classList.add('one-col');
+                // 注入单栏 HTML
+                mainContainer.innerHTML = `<div class="scroll-column">${timelineNotes.map(renderCard).join('')}</div>`;
 
-                // 重新绑定视图切换逻辑所需的元素
-                // 注意：因为 DOM 被重写了，所以不需要重新绑定按钮事件（按钮在 header 里没变），
-                // 但需要更新 view logic 里引用的 colMedia 和 colText
-                // 这里简单起见，用户点击按钮时会重新查询 DOM，所以不需要额外操作。
-
+                // 绑定灯箱
                 document.querySelectorAll('.media-item').forEach(img => {
                     img.addEventListener('click', (e) => {
                         const lb = document.getElementById('lightbox');
@@ -600,6 +527,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
             }
         })();
 
+        // 通用灯箱逻辑
         const lightbox = document.getElementById('lightbox');
         const lightboxImg = document.getElementById('lightbox-img');
         if(lightboxImg) lightboxImg.onload = () => lightboxImg.classList.add('loaded');
