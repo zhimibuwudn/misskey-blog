@@ -14,7 +14,7 @@ export const CONFIG = {
   // 2. SITE META (Website Information) | 网站元信息
   // ==============================================================================
 
-  SITE_TITLE: '否极泰来',
+  SITE_TITLE: 'Example',
   SITE_DESC: 'Connecting to fediverse... | 动态同步',
   SITE_ICON: 'https://sshup.com/files/thumbnail-b457fa5b-1189-427d-baa7-389673f93283',
 
