@@ -16,14 +16,16 @@ export async function GET(context) {
   const { username: USER_NAME, instance: INSTANCE_URL, domain: DOMAIN } = parseHandle(CONFIG.FEDIVERSE_HANDLE);
   let rawItems = [];
 
-  // 获取 Fediverse 数据
   if (USER_NAME) {
       try {
-          const headers = { "User-Agent": "Mozilla/5.0 (compatible; MisskeyBlog/2.0)" };
+          const headers = { 
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+              "Accept": "application/json"
+          };
           let userId = null;
           let platform = 'unknown';
 
-          // Misskey Lookup
+          // Misskey
           try {
               const mkRes = await fetch(`${INSTANCE_URL}/api/users/show`, {
                   method: "POST", headers: { "Content-Type": "application/json", ...headers },
@@ -32,12 +34,24 @@ export async function GET(context) {
               if (mkRes.ok) { userId = (await mkRes.json()).id; platform = 'misskey'; }
           } catch(e) {}
 
-          // Mastodon Lookup
+          // Mastodon (突破拦截版)
           if (!userId) {
               try {
-                  let mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`, { headers });
-                  if (!mstdRes.ok) mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`, { headers });
-                  if (mstdRes.ok) { userId = (await mstdRes.json()).id; platform = 'mastodon'; }
+                  let mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`, { headers });
+                  if (!mstdRes.ok) mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`, { headers });
+                  if (mstdRes.ok) { 
+                      userId = (await mstdRes.json()).id; 
+                      platform = 'mastodon'; 
+                  } else {
+                      let searchRes = await fetch(`${INSTANCE_URL}/api/v2/search?q=${USER_NAME}&type=accounts&limit=1`, { headers });
+                      if (searchRes.ok) {
+                          const searchData = await searchRes.json();
+                          if (searchData.accounts && searchData.accounts.length > 0) {
+                              userId = searchData.accounts[0].id;
+                              platform = 'mastodon';
+                          }
+                      }
+                  }
               } catch(e) {}
           }
 
@@ -45,7 +59,7 @@ export async function GET(context) {
               if (platform === 'misskey') {
                   const res = await fetch(`${INSTANCE_URL}/api/users/notes`, {
                       method: "POST", headers: { "Content-Type": "application/json", ...headers },
-                      body: JSON.stringify({ userId: userId, limit: 20, includeReplies: false, includeMyRenotes: true }),
+                      body: JSON.stringify({ userId: userId, limit: 30, includeReplies: false, includeMyRenotes: true }),
                   });
                   if (res.ok) {
                       const notes = await res.json();
@@ -57,15 +71,18 @@ export async function GET(context) {
                       })));
                   }
               } else {
-                  const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=20&exclude_replies=true`, { headers });
+                  // 取消了 exclude_replies=true 并在本地过滤 (只保留与自己的回复，过滤别人的聊天)
+                  const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=30`, { headers });
                   if (res.ok) {
-                      const notes = await res.json();
-                      rawItems.push(...notes.map(n => ({
-                          title: (n.reblog ? '🔄 ' : '') + (n.content.replace(/<[^>]+>/g, '').substring(0, 50) || '[分享图片]'),
-                          pubDate: new Date(n.created_at),
-                          description: n.content,
-                          link: `${INSTANCE_URL}/@${USER_NAME}/${n.id}`
-                      })));
+                      const mstdNotes = await res.json();
+                      rawItems.push(...mstdNotes
+                          .filter(n => !n.in_reply_to_account_id || n.in_reply_to_account_id === n.account.id)
+                          .map(n => ({
+                              title: (n.reblog ? '🔄 ' : '') + (n.content.replace(/<[^>]+>/g, '').substring(0, 50) || '[分享图片]'),
+                              pubDate: new Date(n.created_at),
+                              description: n.content,
+                              link: `${INSTANCE_URL}/@${USER_NAME}/${n.id}`
+                          })));
                   }
               }
           }

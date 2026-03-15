@@ -6,7 +6,6 @@ import { CONFIG } from '../config';
 // 1. 服务端配置与工具 (Server-Side Logic)
 // ==============================================
 
-// 解析用户 ID
 const parseHandle = (handle) => {
     if (!handle) return { username: null, instance: null, domain: null };
     const clean = handle.startsWith('@') ? handle.slice(1) : handle;
@@ -19,14 +18,13 @@ const parseHandle = (handle) => {
 
 const { username: USER_NAME, instance: INSTANCE_URL, domain: DOMAIN } = parseHandle(CONFIG.FEDIVERSE_HANDLE);
 
-// 全局变量
 let timelineNotes = []; 
 let errorMsg = '';
 let dynamicDesc = CONFIG.SITE_DESC; 
 let dynamicImage = CONFIG.SITE_ICON; 
 let platform = 'unknown'; 
 
-// --- Mastodon 数据标准化工具 ---
+// Mastodon 数据标准化
 const normalizeMastodon = (status) => {
     const note = {
         id: status.id,
@@ -56,43 +54,48 @@ const normalizeMastodon = (status) => {
     return note;
 };
 
-// --- 核心抓取函数 ---
+// --- 核心抓取函数 (突破拦截 + 修复 Thread 抓取) ---
 async function fetchFediverseData() {
     if (!USER_NAME) return [];
 
+    // 伪装成真实的 Chrome 浏览器，突破 Cloudflare 拦截
     const headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; MisskeyBlog/2.0; +https://github.com/Ghfftn/misskey-blog)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json"
     };
 
     let userId = null;
     let localPlatform = 'unknown';
 
-    // 1. 尝试 Misskey
     try {
         const mkRes = await fetch(`${INSTANCE_URL}/api/users/show`, {
             method: "POST", headers: { "Content-Type": "application/json", ...headers },
             body: JSON.stringify({ username: USER_NAME }),
         });
         if (mkRes.ok) {
-            const user = await mkRes.json();
-            userId = user.id;
+            userId = (await mkRes.json()).id;
             localPlatform = 'misskey';
         }
     } catch(e) {}
 
-    // 2. 尝试 Mastodon
     if (localPlatform === 'unknown') {
         try {
-            let lookupUrl = `${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`;
-            let mstdRes = await fetch(lookupUrl, { headers: headers });
-            if (!mstdRes.ok) {
-                lookupUrl = `${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`;
-                mstdRes = await fetch(lookupUrl, { headers: headers });
-            }
+            let mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`, { headers });
+            if (!mstdRes.ok) mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`, { headers });
+            
             if (mstdRes.ok) {
-                const user = await mstdRes.json();
-                userId = user.id;
+                userId = (await mstdRes.json()).id;
                 localPlatform = 'mastodon';
+            } else {
+                // 备用方案：通过 Search API 强行搜索用户 ID
+                const searchRes = await fetch(`${INSTANCE_URL}/api/v2/search?q=${USER_NAME}&type=accounts&limit=1`, { headers });
+                if (searchRes.ok) {
+                    const searchData = await searchRes.json();
+                    if (searchData.accounts && searchData.accounts.length > 0) {
+                        userId = searchData.accounts[0].id;
+                        localPlatform = 'mastodon';
+                    }
+                }
             }
         } catch(e) {}
     }
@@ -102,11 +105,9 @@ async function fetchFediverseData() {
         return [];
     }
 
-    // 3. 抓取内容
     if (localPlatform === 'misskey') {
         const res = await fetch(`${INSTANCE_URL}/api/users/notes`, {
             method: "POST", headers: { "Content-Type": "application/json", ...headers },
-            // 抓取 30 条混合内容
             body: JSON.stringify({ userId: userId, limit: 30, includeReplies: false, includeMyRenotes: true }),
         });
         if (!res.ok) return [];
@@ -114,7 +115,8 @@ async function fetchFediverseData() {
         return raw.map(n => ({ ...n, isHtml: false, platform: 'misskey', url: `https://${DOMAIN}/notes/${n.id}` }));
 
     } else if (localPlatform === 'mastodon') {
-        const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=30&exclude_replies=true`, { headers: headers });
+        // 取消 exclude_replies=true，让连串的长推文(Thread)也能被抓取
+        const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=30`, { headers });
         if (!res.ok) return [];
         const mstdNotes = await res.json();
         return mstdNotes.map(normalizeMastodon);
@@ -122,7 +124,6 @@ async function fetchFediverseData() {
     return [];
 }
 
-// 文本渲染辅助
 const formatNoteText = (text, isHtml = false) => {
     if (!text) return '';
     if (isHtml) return text; 
@@ -149,7 +150,6 @@ try {
   if (!allNotes || allNotes.length === 0) {
       errorMsg = 'No public posts found (Server-side)';
   } else {
-      // 智能预览图
       const imageNote = allNotes.find(n => {
           const target = n.renote || n;
           return target.files && target.files.length > 0;
@@ -158,15 +158,13 @@ try {
       if (imageNote) {
           const target = imageNote.renote || imageNote;
           dynamicImage = target.files[0].thumbnailUrl || target.files[0].url;
-          
           let rawText = target.isHtml ? target.text.replace(/<[^>]+>/g, '') : (target.text || '');
           if (!rawText) rawText = `[Shared images]`;
-          rawText = rawText.replace(/\n/g, ' '); 
-          dynamicDesc = rawText.length > 120 ? rawText.substring(0, 117) + '...' : rawText;
+          dynamicDesc = rawText.replace(/\n/g, ' ').substring(0, 117) + '...';
           if (imageNote.renote) dynamicDesc = `🔄 ${dynamicDesc}`;
       }
       
-      // 过滤与赋值
+      // 本地智能过滤：只隐藏和别人的聊天，保留自己的长推文(Thread)
       allNotes.forEach(note => {
         const target = note.renote || note;
         if (target.replyId && target.replyAccountId !== target.user.id) return; 
@@ -223,7 +221,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .text-content p:last-child { margin-bottom: 0; }
         .text-content a { color: var(--link-color); text-decoration: none; }
         
-        /* 顶部导航: 增加宽度到 75% */
+        /* 顶部导航 */
         .header-bar { position: fixed; top: 0; width: 75%; left: 50%; transform: translateX(-50%); height: 80px; padding: 0 30px; background: rgba(5,5,5,0.6); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-sizing: border-box; gap: 20px; min-width: 900px; }
         .header-left { display: flex; flex-direction: column; justify-content: center; min-width: 150px; }
         h1 { font-size: 1.5rem; font-weight: 800; margin: 0; letter-spacing: -0.5px; background: var(--accent-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 2px 10px rgba(0,0,0,0.5)); display: flex; align-items: center; }
@@ -245,12 +243,12 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .refresh-btn:hover { border-color: var(--terminal-green); color: var(--terminal-green); box-shadow: 0 0 15px rgba(57, 255, 20, 0.3); transform: rotate(180deg) scale(1.1); }
         .refresh-icon { width: 24px; height: 24px; fill: currentColor; }
         
-        /* 布局 - 升级到 75% 宽度，并设置最小宽度 */
+        /* 布局 - 75% 宽度 */
         .dashboard-container { 
             flex: 1; 
             display: block; 
-            width: 75%; /* 3/4 屏幕宽度，更宽敞 */
-            min-width: 900px; /* 防止在小笔记本上过窄 */
+            width: 75%; 
+            min-width: 900px; 
             margin: 0 auto; 
             padding-top: 0; 
             height: 100vh; 
@@ -259,15 +257,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
             border-right: 1px solid var(--border); 
         }
         
-        /* 统一滚动区域 */
-        .scroll-column { 
-            height: 100%; 
-            overflow-y: auto; 
-            padding: 100px 20px 40px 20px; 
-            scroll-behavior: smooth; 
-            scrollbar-width: thin; 
-            scrollbar-color: rgba(255,255,255,0.1) transparent; 
-        }
+        .scroll-column { height: 100%; overflow-y: auto; padding: 100px 20px 40px 20px; scroll-behavior: smooth; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
         .scroll-column::-webkit-scrollbar { width: 4px; }
         .scroll-column::-webkit-scrollbar-track { background: transparent; }
         .scroll-column::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
@@ -280,25 +270,8 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .text-content { line-height: 1.6; color: var(--text-main); font-size: 0.95rem; margin-bottom: 12px; overflow-wrap: break-word; }
         .renote-box { background: rgba(0,0,0,0.3); border-left: 2px solid #555; padding: 10px; margin-bottom: 10px; font-size: 0.85em; color: #999; font-family: 'JetBrains Mono', monospace; }
         
-        /* 媒体展示 - 原图模式 (无裁剪，无黑边) */
-        .media-grid { 
-            display: flex; 
-            flex-direction: column; 
-            gap: 12px; 
-            margin-bottom: 12px; 
-        }
-        .media-item { 
-            width: auto; /* 宽度自适应 */
-            max-width: 100%; /* 但不超过卡片宽度 */
-            height: auto; /* 高度自适应 */
-            display: block;
-            margin: 0 auto; /* 居中显示 */
-            object-fit: contain; 
-            border-radius: 8px;
-            cursor: zoom-in; 
-            border: 1px solid rgba(255,255,255,0.05);
-            transition: opacity 0.2s; 
-        }
+        .media-grid { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+        .media-item { width: auto; max-width: 100%; height: auto; max-height: 800px; display: block; margin: 0 auto; object-fit: contain; border-radius: 8px; cursor: zoom-in; border: 1px solid rgba(255,255,255,0.05); transition: opacity 0.2s; }
         .media-item:hover { opacity: 0.9; }
         
         .card-footer { padding-top: 12px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-size: 0.75em; color: #666; font-family: 'JetBrains Mono', monospace; }
@@ -333,17 +306,14 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         <div class="header-left"><h1>{CONFIG.SITE_TITLE}</h1></div>
         <div class="header-marquee"><div class="marquee-track">{marqueeItems.map(item => (<div class="reaction-item">{item}</div>))}</div></div>
         <div class="header-right">
-            {/* 状态指示 */}
             <div class="status-badge"><span class="status-dot"></span>UP</div>
             
-            {/* GitHub 纯图标 */}
             {CONFIG.GITHUB_REPO && (
                 <a href={CONFIG.GITHUB_REPO} target="_blank" class="icon-btn" title="GitHub">
                     <svg class="btn-icon-svg" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                 </a>
             )}
 
-            {/* RSS 纯图标 */}
             <a href="/rss.xml" class="icon-btn" target="_blank" title="Subscribe">
                 <svg class="btn-icon-svg" viewBox="0 0 24 24"><path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19 7.38 20 6.18 20C5 20 4 19 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1Z"/></svg>
             </a>
@@ -364,10 +334,8 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                                 <span class="username">{target.user.name || target.user.username}</span>
                             </div>
                             
-                            {/* 文字内容 */}
                             {target.text && <div class="text-content" set:html={formatNoteText(target.text, target.isHtml)}></div>}
                             
-                            {/* 图片内容 (自适应原图) */}
                             {target.files && target.files.length > 0 && (
                                 <div class="media-grid">
                                     {target.files.map(file => (
@@ -378,7 +346,6 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                                 </div>
                             )}
 
-                            {/* 引用/评论框 */}
                             {note.renote && note.text && (<div class="renote-box" set:html={`// comment: <br> ${formatNoteText(note.text, note.isHtml)}`}></div>)}
                             
                             <div class="card-footer">
@@ -418,12 +385,11 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
     </button>
     
     <script define:vars={{ USER_NAME, INSTANCE_URL, DOMAIN, serverError: errorMsg }}>
-        // --- 刷新按钮 ---
         document.getElementById('refresh-btn').addEventListener('click', () => {
             location.reload();
         });
 
-        // --- 客户端救援模式 ---
+        // 客户端救援模式
         (async function clientSideRescue() {
             if (!serverError) return; 
 
@@ -449,13 +415,25 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
 
             async function fetchMstdClient() {
                 try {
-                    let lookupUrl = `${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`;
-                    let res = await fetch(lookupUrl);
-                    if (!res.ok) res = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`);
-                    if (!res.ok) throw new Error('Client lookup failed');
+                    let res = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`);
+                    if (!res.ok) res = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`);
                     
-                    const user = await res.json();
-                    const notesRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/${user.id}/statuses?limit=30&exclude_replies=true`);
+                    let user = null;
+                    if (res.ok) {
+                        user = await res.json();
+                    } else {
+                        let searchRes = await fetch(`${INSTANCE_URL}/api/v2/search?q=${USER_NAME}&type=accounts&limit=1`);
+                        if (searchRes.ok) {
+                            let searchData = await searchRes.json();
+                            if (searchData.accounts && searchData.accounts.length > 0) {
+                                user = searchData.accounts[0];
+                            }
+                        }
+                    }
+                    if (!user) throw new Error('Client lookup failed');
+                    
+                    // 取消 exclude_replies 限制
+                    const notesRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/${user.id}/statuses?limit=30`);
                     const rawNotes = await notesRes.json();
                     return rawNotes.map(normalizeMastodon);
                 } catch(e) {
@@ -469,7 +447,6 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
             if (notes.length > 0) {
                 loadingEl.style.display = 'none';
                 
-                // 客户端过滤：只显示原创或转发，过滤回复
                 const timelineNotes = notes.filter(n => {
                    const target = n.renote || n;
                    if (!target.user) return false;
@@ -477,12 +454,10 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                    return true;
                 });
 
-                // 客户端渲染逻辑 (单栏)
                 const renderCard = (note) => {
                     const target = note.renote || note;
                     const isRenote = !!note.renote;
                     
-                    // 图片按原图比例展示
                     const mediaHtml = target.files && target.files.length ? 
                         `<div class="media-grid">
                             ${target.files.map(f => `<img src="${f.thumbnailUrl}" class="media-item" data-full-src="${f.url}" loading="lazy" alt="Media">`).join('')}
@@ -507,10 +482,8 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                     </article>`;
                 };
 
-                // 注入单栏 HTML
                 mainContainer.innerHTML = `<div class="scroll-column">${timelineNotes.map(renderCard).join('')}</div>`;
 
-                // 绑定灯箱
                 document.querySelectorAll('.media-item').forEach(img => {
                     img.addEventListener('click', (e) => {
                         const lb = document.getElementById('lightbox');
@@ -527,7 +500,6 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
             }
         })();
 
-        // 通用灯箱逻辑
         const lightbox = document.getElementById('lightbox');
         const lightboxImg = document.getElementById('lightbox-img');
         if(lightboxImg) lightboxImg.onload = () => lightboxImg.classList.add('loaded');
