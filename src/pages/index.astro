@@ -6,6 +6,7 @@ import { CONFIG } from '../config';
 // 1. 服务端配置与工具 (Server-Side Logic)
 // ==============================================
 
+// 解析用户 ID
 const parseHandle = (handle) => {
     if (!handle) return { username: null, instance: null, domain: null };
     const clean = handle.startsWith('@') ? handle.slice(1) : handle;
@@ -18,13 +19,14 @@ const parseHandle = (handle) => {
 
 const { username: USER_NAME, instance: INSTANCE_URL, domain: DOMAIN } = parseHandle(CONFIG.FEDIVERSE_HANDLE);
 
+// 全局变量
 let timelineNotes = []; 
 let errorMsg = '';
 let dynamicDesc = CONFIG.SITE_DESC; 
 let dynamicImage = CONFIG.SITE_ICON; 
 let platform = 'unknown'; 
 
-// Mastodon 数据标准化
+// --- Mastodon 数据标准化工具 ---
 const normalizeMastodon = (status) => {
     const note = {
         id: status.id,
@@ -54,11 +56,10 @@ const normalizeMastodon = (status) => {
     return note;
 };
 
-// --- 核心抓取函数 (突破拦截 + 修复 Thread 抓取) ---
+// --- 核心抓取函数 (突破拦截 + 保留 Thread 长贴) ---
 async function fetchFediverseData() {
     if (!USER_NAME) return [];
 
-    // 伪装成真实的 Chrome 浏览器，突破 Cloudflare 拦截
     const headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json"
@@ -67,28 +68,31 @@ async function fetchFediverseData() {
     let userId = null;
     let localPlatform = 'unknown';
 
+    // 1. 尝试 Misskey
     try {
         const mkRes = await fetch(`${INSTANCE_URL}/api/users/show`, {
             method: "POST", headers: { "Content-Type": "application/json", ...headers },
             body: JSON.stringify({ username: USER_NAME }),
         });
         if (mkRes.ok) {
-            userId = (await mkRes.json()).id;
+            const user = await mkRes.json();
+            userId = user.id;
             localPlatform = 'misskey';
         }
     } catch(e) {}
 
+    // 2. 尝试 Mastodon (防拦截探测)
     if (localPlatform === 'unknown') {
         try {
-            let mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`, { headers });
-            if (!mstdRes.ok) mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`, { headers });
+            let mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}`, { headers: headers });
+            if (!mstdRes.ok) mstdRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/lookup?acct=${USER_NAME}@${DOMAIN}`, { headers: headers });
             
             if (mstdRes.ok) {
-                userId = (await mstdRes.json()).id;
+                const user = await mstdRes.json();
+                userId = user.id;
                 localPlatform = 'mastodon';
             } else {
-                // 备用方案：通过 Search API 强行搜索用户 ID
-                const searchRes = await fetch(`${INSTANCE_URL}/api/v2/search?q=${USER_NAME}&type=accounts&limit=1`, { headers });
+                const searchRes = await fetch(`${INSTANCE_URL}/api/v2/search?q=${USER_NAME}&type=accounts&limit=1`, { headers: headers });
                 if (searchRes.ok) {
                     const searchData = await searchRes.json();
                     if (searchData.accounts && searchData.accounts.length > 0) {
@@ -105,6 +109,7 @@ async function fetchFediverseData() {
         return [];
     }
 
+    // 3. 抓取内容
     if (localPlatform === 'misskey') {
         const res = await fetch(`${INSTANCE_URL}/api/users/notes`, {
             method: "POST", headers: { "Content-Type": "application/json", ...headers },
@@ -115,8 +120,8 @@ async function fetchFediverseData() {
         return raw.map(n => ({ ...n, isHtml: false, platform: 'misskey', url: `https://${DOMAIN}/notes/${n.id}` }));
 
     } else if (localPlatform === 'mastodon') {
-        // 取消 exclude_replies=true，让连串的长推文(Thread)也能被抓取
-        const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=30`, { headers });
+        // 取消 exclude_replies 限制，拿到所有贴子，后面我们在本地智能过滤
+        const res = await fetch(`${INSTANCE_URL}/api/v1/accounts/${userId}/statuses?limit=30`, { headers: headers });
         if (!res.ok) return [];
         const mstdNotes = await res.json();
         return mstdNotes.map(normalizeMastodon);
@@ -124,6 +129,7 @@ async function fetchFediverseData() {
     return [];
 }
 
+// 文本渲染辅助
 const formatNoteText = (text, isHtml = false) => {
     if (!text) return '';
     if (isHtml) return text; 
@@ -150,6 +156,7 @@ try {
   if (!allNotes || allNotes.length === 0) {
       errorMsg = 'No public posts found (Server-side)';
   } else {
+      // 智能预览图
       const imageNote = allNotes.find(n => {
           const target = n.renote || n;
           return target.files && target.files.length > 0;
@@ -158,13 +165,15 @@ try {
       if (imageNote) {
           const target = imageNote.renote || imageNote;
           dynamicImage = target.files[0].thumbnailUrl || target.files[0].url;
+          
           let rawText = target.isHtml ? target.text.replace(/<[^>]+>/g, '') : (target.text || '');
           if (!rawText) rawText = `[Shared images]`;
-          dynamicDesc = rawText.replace(/\n/g, ' ').substring(0, 117) + '...';
+          rawText = rawText.replace(/\n/g, ' '); 
+          dynamicDesc = rawText.length > 120 ? rawText.substring(0, 117) + '...' : rawText;
           if (imageNote.renote) dynamicDesc = `🔄 ${dynamicDesc}`;
       }
       
-      // 本地智能过滤：只隐藏和别人的聊天，保留自己的长推文(Thread)
+      // 过滤与赋值：保留原贴和自己的回复(Thread)，过滤给别人的回复
       allNotes.forEach(note => {
         const target = note.renote || note;
         if (target.replyId && target.replyAccountId !== target.user.id) return; 
@@ -221,7 +230,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .text-content p:last-child { margin-bottom: 0; }
         .text-content a { color: var(--link-color); text-decoration: none; }
         
-        /* 顶部导航 */
+        /* --- 导航栏: 75% 宽度，极致宽敞 --- */
         .header-bar { position: fixed; top: 0; width: 75%; left: 50%; transform: translateX(-50%); height: 80px; padding: 0 30px; background: rgba(5,5,5,0.6); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-sizing: border-box; gap: 20px; min-width: 900px; }
         .header-left { display: flex; flex-direction: column; justify-content: center; min-width: 150px; }
         h1 { font-size: 1.5rem; font-weight: 800; margin: 0; letter-spacing: -0.5px; background: var(--accent-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 2px 10px rgba(0,0,0,0.5)); display: flex; align-items: center; }
@@ -243,7 +252,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .refresh-btn:hover { border-color: var(--terminal-green); color: var(--terminal-green); box-shadow: 0 0 15px rgba(57, 255, 20, 0.3); transform: rotate(180deg) scale(1.1); }
         .refresh-icon { width: 24px; height: 24px; fill: currentColor; }
         
-        /* 布局 - 75% 宽度 */
+        /* --- 主内容区: 单栏设计，75% 超大宽度 --- */
         .dashboard-container { 
             flex: 1; 
             display: block; 
@@ -270,6 +279,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         .text-content { line-height: 1.6; color: var(--text-main); font-size: 0.95rem; margin-bottom: 12px; overflow-wrap: break-word; }
         .renote-box { background: rgba(0,0,0,0.3); border-left: 2px solid #555; padding: 10px; margin-bottom: 10px; font-size: 0.85em; color: #999; font-family: 'JetBrains Mono', monospace; }
         
+        /* --- 媒体展示: 原图比例满宽展示 --- */
         .media-grid { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
         .media-item { width: auto; max-width: 100%; height: auto; max-height: 800px; display: block; margin: 0 auto; object-fit: contain; border-radius: 8px; cursor: zoom-in; border: 1px solid rgba(255,255,255,0.05); transition: opacity 0.2s; }
         .media-item:hover { opacity: 0.9; }
@@ -306,6 +316,7 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
         <div class="header-left"><h1>{CONFIG.SITE_TITLE}</h1></div>
         <div class="header-marquee"><div class="marquee-track">{marqueeItems.map(item => (<div class="reaction-item">{item}</div>))}</div></div>
         <div class="header-right">
+            {/* 只显示 UP */}
             <div class="status-badge"><span class="status-dot"></span>UP</div>
             
             {CONFIG.GITHUB_REPO && (
@@ -432,7 +443,6 @@ const marqueeItems = [...CONFIG.THEME.MARQUEE_TEXT, ...CONFIG.THEME.MARQUEE_TEXT
                     }
                     if (!user) throw new Error('Client lookup failed');
                     
-                    // 取消 exclude_replies 限制
                     const notesRes = await fetch(`${INSTANCE_URL}/api/v1/accounts/${user.id}/statuses?limit=30`);
                     const rawNotes = await notesRes.json();
                     return rawNotes.map(normalizeMastodon);
