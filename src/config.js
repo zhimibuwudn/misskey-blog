@@ -8,7 +8,7 @@ export const CONFIG = {
   // Format: @username@instance.domain
   // Example: @Z@sshup.com
   // 格式：@用户名@实例域名
-  FEDIVERSE_HANDLE: '@MrLovenstein@mastodon.social',
+  FEDIVERSE_HANDLE: '@zhangsong@mky.268119.xyz',
 
   // ==============================================================================
   // 2. SITE META (Website Information) | 网站元信息
